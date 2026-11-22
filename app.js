@@ -165,11 +165,11 @@ function loadPOIs() {
         }
     }
 
-    for (const poi of pois) {
-        if (poi.discovered && poi.category === "landmark") {
-            revealPOIArea(poi.lat, poi.lng, poi.category);
-        }
-    }
+    // Bereits entdeckte POIs NICHT bei jedem App-Start erneut aufdecken.
+    // Ihre Aufdeckungspunkte sind schon in fow_points gespeichert.
+    // Der alte Aufruf von revealPOIArea() hat bei JEDEM Start pro
+    // Wahrzeichen weitere 160 Punkte angehaengt und sofort gespeichert.
+    // Das liess den Spielstand unbegrenzt wachsen und bremste Mobilgeraete aus.
 }
 
 function renderPOIMarkers() {

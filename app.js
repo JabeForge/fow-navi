@@ -116,16 +116,31 @@ function updateRecenterButtonVisibility() {
 const canvas = document.getElementById("fogCanvas");
 const ctx = canvas.getContext("2d");
 let fogDrawRequested = false;
-
-function requestDrawFog() {
-    if (fogDrawRequested) return;
-
-    fogDrawRequested = true;
-
-    requestAnimationFrame(() => {
-        drawFog();
+// Auf Touch-Geraeten beim Verschieben hoechstens etwa 5x pro Sekunde neu zeichnen.
+// Nach dem Loslassen wird immer sofort das endgueltige Bild gerendert.
+let fogDragging = false;
+let lastFogRender = 0;
+let fogPendingFrame = null;
+function requestDrawFog(force = false) {
+    if (force && fogPendingFrame !== null) {
+        cancelAnimationFrame(fogPendingFrame);
+        fogPendingFrame = null;
         fogDrawRequested = false;
-    });
+    }
+    if (fogDrawRequested) return;
+    fogDrawRequested = true;
+    const minInterval = fogDragging ? 200 : 100;
+    function renderFrame(now) {
+        if (!force && now - lastFogRender < minInterval) {
+            fogPendingFrame = requestAnimationFrame(renderFrame);
+            return;
+        }
+        fogPendingFrame = null;
+        fogDrawRequested = false;
+        lastFogRender = now;
+        drawFog();
+    }
+    fogPendingFrame = requestAnimationFrame(renderFrame);
 }
 
 function resizeCanvas() {
@@ -1017,12 +1032,34 @@ function drawFog() {
     ctx.globalCompositeOperation = "source-over";
 }
 
-map.on("move", requestDrawFog);
-map.on("zoomend", requestDrawFog);
+map.on("move", () => requestDrawFog());
+map.on("zoomend", () => requestDrawFog(true));
 map.on("dragstart", () => {
+    fogDragging = true;
     isFollowingUser = false;
     updateRecenterButtonVisibility();
 });
+map.on("dragend", () => {
+    fogDragging = false;
+    requestDrawFog(true);
+});
+
+// Screen Wake Lock: solange die Seite sichtbar ist, Android-Bildschirm wach halten.
+// Browser/Betriebssystem duerfen die Sperre jederzeit wieder aufheben.
+let screenWakeLock = null;
+async function keepScreenAwake() {
+    if (!('wakeLock' in navigator) || document.visibilityState !== 'visible' || screenWakeLock) return;
+    try {
+        screenWakeLock = await navigator.wakeLock.request('screen');
+        screenWakeLock.addEventListener('release', () => { screenWakeLock = null; });
+    } catch (error) {
+        console.info('Bildschirm-Wachhalten nicht verfuegbar:', error);
+    }
+}
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') keepScreenAwake();
+});
+keepScreenAwake();
 
 if (recenterButtonEl) {
     recenterButtonEl.addEventListener("click", () => {

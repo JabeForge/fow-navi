@@ -38,6 +38,51 @@ let routeLine = null;
 let lastRevealPoint = null;
 let discoveredAreas = [];
 let discoveredPoints = [];
+
+// Performance: räumlicher Index, damit beim Verschieben nur sichtbare Punkte verarbeitet werden.
+// Die gespeicherten Koordinaten und das bisherige Aufdeckungsverhalten bleiben unverändert.
+const FOG_CELL_DEGREES = 0.005;
+const fogPointCells = new Map();
+function fogCellKey(latCell, lngCell) {
+    return `${latCell},${lngCell}`;
+}
+function indexFogPoint(point) {
+    const latCell = Math.floor(point[0] / FOG_CELL_DEGREES);
+    const lngCell = Math.floor(point[1] / FOG_CELL_DEGREES);
+    const key = fogCellKey(latCell, lngCell);
+    let bucket = fogPointCells.get(key);
+    if (!bucket) {
+        bucket = [];
+        fogPointCells.set(key, bucket);
+    }
+    bucket.push(point);
+}
+function rebuildFogIndex() {
+    fogPointCells.clear();
+    for (const point of discoveredPoints) indexFogPoint(point);
+}
+
+// Vorgezeichneter Verlauf statt Tausender neuer Gradienten pro Frame.
+let fogStamp = null;
+let fogStampRadius = 0;
+function getFogStamp(radius) {
+    const r = Math.max(1, Math.ceil(radius));
+    if (fogStamp && fogStampRadius === r) return fogStamp;
+    const stamp = document.createElement('canvas');
+    stamp.width = stamp.height = r * 2 + 2;
+    const stampCtx = stamp.getContext('2d');
+    const center = r + 1;
+    const gradient = stampCtx.createRadialGradient(center, center, 0, center, center, r);
+    gradient.addColorStop(0, 'rgba(0,0,0,1)');
+    gradient.addColorStop(1, 'rgba(0,0,0,0)');
+    stampCtx.fillStyle = gradient;
+    stampCtx.beginPath();
+    stampCtx.arc(center, center, r, 0, Math.PI * 2);
+    stampCtx.fill();
+    fogStamp = stamp;
+    fogStampRadius = r;
+    return stamp;
+}
 let poiMarkers = [];
 let boundaryLayer = null;
 let isBoundaryLoading = false;
@@ -483,6 +528,7 @@ function addRevealCircle(lat, lng) {
 
     drawRevealCircle(lat, lng);
     discoveredPoints.push(newPoint);
+    indexFogPoint(newPoint);
     addXP(1);
 }
 
@@ -519,7 +565,9 @@ function revealPOIArea(lat, lng, poiCategory) {
                 lng + (Math.sin(angle) * ringRadius) /
                 (111320 * Math.cos(lat * Math.PI / 180));
 
-            discoveredPoints.push([offsetLat, offsetLng]);
+            const fogPoint = [offsetLat, offsetLng];
+            discoveredPoints.push(fogPoint);
+            indexFogPoint(fogPoint);
         }
     }
 
@@ -830,6 +878,7 @@ function loadProgress() {
     }
 
     discoveredPoints = points;
+    rebuildFogIndex();
     requestDrawFog();
 }
 
@@ -848,6 +897,7 @@ function resetProgress() {
 
     discoveredAreas = [];
     discoveredPoints = [];
+    fogPointCells.clear();
     lastRevealPoint = null;
     lastAcceptedPoint = null;
     smoothedPoint = null;
@@ -894,38 +944,47 @@ function metersToPixels(lat, lng, meters) {
 }
 
 function drawFog() {
-    const start = performance.now();
+    // Canvas-Overlay vollständig füllen, wie bisher.
+    ctx.globalCompositeOperation = "source-over";
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // kompletten Nebel zeichnen
     ctx.fillStyle = "rgba(0, 0, 0, 1)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-    // Löcher ausschneiden
+    if (discoveredPoints.length === 0) return;
+
+    // Nur Punkte innerhalb des Bildschirms plus Rand für überlappende Kreise.
+    const bounds = map.getBounds();
+    const center = map.getCenter();
+    const radiusPx = metersToPixels(center.lat, center.lng, DISCOVERY_RADIUS) * 1.35;
+    const paddingMeters = DISCOVERY_RADIUS * 1.5;
+    const latPadding = paddingMeters / 111320;
+    const cosLat = Math.max(0.01, Math.abs(Math.cos(center.lat * Math.PI / 180)));
+    const lngPadding = paddingMeters / (111320 * cosLat);
+    const minLat = bounds.getSouth() - latPadding;
+    const maxLat = bounds.getNorth() + latPadding;
+    const minLng = bounds.getWest() - lngPadding;
+    const maxLng = bounds.getEast() + lngPadding;
+    const minLatCell = Math.floor(minLat / FOG_CELL_DEGREES);
+    const maxLatCell = Math.floor(maxLat / FOG_CELL_DEGREES);
+    const minLngCell = Math.floor(minLng / FOG_CELL_DEGREES);
+    const maxLngCell = Math.floor(maxLng / FOG_CELL_DEGREES);
+
+    const stamp = getFogStamp(radiusPx);
+    const stampOffset = fogStampRadius + 1;
     ctx.globalCompositeOperation = "destination-out";
 
-    for (const [lat, lng] of discoveredPoints) {
-        const point = map.latLngToContainerPoint([lat, lng]);
-        const radiusPx = metersToPixels(lat, lng, DISCOVERY_RADIUS);
-        const softRadiusPx = radiusPx * 1.35;
-
-        const gradient = ctx.createRadialGradient(
-            point.x, point.y, 0,
-            point.x, point.y, softRadiusPx
-        );
-
-        gradient.addColorStop(0, "rgba(0,0,0,1)");
-        gradient.addColorStop(1, "rgba(0,0,0,0)");
-
-        ctx.fillStyle = gradient;
-
-        ctx.beginPath();
-        ctx.arc(point.x, point.y, softRadiusPx, 0, Math.PI * 2);
-        ctx.fill();
+    for (let latCell = minLatCell; latCell <= maxLatCell; latCell++) {
+        for (let lngCell = minLngCell; lngCell <= maxLngCell; lngCell++) {
+            const points = fogPointCells.get(fogCellKey(latCell, lngCell));
+            if (!points) continue;
+            for (const [lat, lng] of points) {
+                if (lat < minLat || lat > maxLat || lng < minLng || lng > maxLng) continue;
+                const point = map.latLngToContainerPoint([lat, lng]);
+                ctx.drawImage(stamp, point.x - stampOffset, point.y - stampOffset);
+            }
+        }
     }
-
     ctx.globalCompositeOperation = "source-over";
-    console.log("drawFog:", (performance.now() - start).toFixed(1), "ms");
 }
 
 map.on("move", requestDrawFog);

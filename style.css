@@ -26,27 +26,27 @@ html, body {
     padding: 10px 14px;
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.9);
-    font-size: 14px;
+    font-size: 17px;
     font-family: Arial, sans-serif;
 }
 
 #xpBox {
     position: absolute;
-    top: 54px;
+    top: 64px;
     left: 10px;
     z-index: 1000;
     padding: 10px 14px;
     border-radius: 8px;
     background: rgba(255, 255, 255, 0.9);
-    font-size: 14px;
+    font-size: 17px;
     font-family: Arial, sans-serif;
-    min-width: 170px;
+    min-width: 195px;
 }
 
 #xpBar {
     margin-top: 8px;
     width: 100%;
-    height: 10px;
+    height: 13px;
     background: rgba(0, 0, 0, 0.15);
     border-radius: 999px;
     overflow: hidden;
@@ -107,3 +107,30 @@ html, body {
     display: none;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
 }
+
+/* Menü und größere Touch-Ziele */
+#menuButton {
+    position: absolute; top: 10px; right: 10px; z-index: 1100;
+    width: 50px; height: 50px; border: none; border-radius: 10px;
+    background: rgba(255,255,255,.96); color: #222; font-size: 27px;
+    cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,.25);
+}
+#gameMenu {
+    position: absolute; top: 68px; right: 10px; z-index: 1100;
+    box-sizing: border-box; width: min(290px, calc(100vw - 20px));
+    padding: 18px; border-radius: 12px; background: rgba(255,255,255,.97);
+    font: 16px Arial, sans-serif; color: #222;
+    box-shadow: 0 5px 22px rgba(0,0,0,.3);
+}
+#gameMenu[hidden] { display: none; }
+#gameMenu h2 { margin: 0 0 14px; font-size: 21px; }
+#gameMenu h3 { margin: 0 0 12px; font-size: 17px; }
+.legendRow { display: flex; align-items: center; gap: 11px; margin: 10px 0; }
+.poiDot { display: inline-block; flex: 0 0 15px; width: 15px; height: 15px; border: 1px solid #555; border-radius: 50%; }
+#gameMenu #resetButton {
+    position: static; display: block; width: 100%; margin-top: 18px;
+    padding: 13px 10px; font-size: 16px; font-weight: bold;
+    color: white; background: #b52b2b; border-radius: 8px;
+}
+#recenterButton { width: 52px; height: 52px; font-size: 23px; }
+#poiToast { font-size: 17px; }

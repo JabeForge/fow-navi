@@ -934,7 +934,26 @@ function resetProgress() {
     }
 }
 
-document.getElementById("resetButton").addEventListener("click", resetProgress);
+// Menü öffnen/schließen, ohne die Karte oder den Spielstand zu verändern.
+const menuButtonEl = document.getElementById("menuButton");
+const gameMenuEl = document.getElementById("gameMenu");
+menuButtonEl.addEventListener("click", () => {
+    gameMenuEl.hidden = !gameMenuEl.hidden;
+    menuButtonEl.setAttribute("aria-expanded", String(!gameMenuEl.hidden));
+});
+document.addEventListener("click", (event) => {
+    if (!gameMenuEl.hidden && !gameMenuEl.contains(event.target) && event.target !== menuButtonEl) {
+        gameMenuEl.hidden = true;
+        menuButtonEl.setAttribute("aria-expanded", "false");
+    }
+});
+document.getElementById("resetButton").addEventListener("click", () => {
+    if (window.confirm("Wirklich alle Entdeckungen und XP unwiderruflich zurücksetzen?")) {
+        resetProgress();
+        gameMenuEl.hidden = true;
+        menuButtonEl.setAttribute("aria-expanded", "false");
+    }
+});
 
 function metersToPixels(lat, lng, meters) {
     const point1 = map.latLngToContainerPoint([lat, lng]);

@@ -23,7 +23,18 @@
 
     <div id="poiToast"></div>
     <button id="recenterButton">◎</button>
-    <button id="resetButton">Reset</button>
+    <button id="menuButton" type="button" aria-label="Menü öffnen" aria-expanded="false" aria-controls="gameMenu">☰</button>
+    <div id="gameMenu" hidden>
+        <h2>Menü</h2>
+        <h3>POI-Legende</h3>
+        <div class="legendRow"><span class="poiDot" style="background:green"></span> Unentdeckter POI</div>
+        <div class="legendRow"><span class="poiDot" style="background:gold"></span> Sehenswürdigkeit</div>
+        <div class="legendRow"><span class="poiDot" style="background:red"></span> Essen</div>
+        <div class="legendRow"><span class="poiDot" style="background:blue"></span> Tankstelle</div>
+        <div class="legendRow"><span class="poiDot" style="background:violet"></span> Geschäft</div>
+        <div class="legendRow"><span class="poiDot" style="background:gray"></span> Sonstiger POI</div>
+        <button id="resetButton" type="button">Fortschritt zurücksetzen</button>
+    </div>
 
     <!-- Leaflet JS -->
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>

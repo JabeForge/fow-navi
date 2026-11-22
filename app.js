@@ -15,7 +15,8 @@ const pois = [
         name: "Test-Wahrzeichen",
         lat: 51.5576,
         lng: 11.4924,
-        discovered: false
+        discovered: false,
+        hinted: false
     }
 ];
 
@@ -156,11 +157,13 @@ function loadPOIs() {
 
         if (existingPoi) {
             existingPoi.discovered = !!savedPoi.discovered;
+            existingPoi.hinted = !!savedPoi.hinted || !!savedPoi.discovered;
             existingPoi.category = savedPoi.category || existingPoi.category;
             existingPoi.name = savedPoi.name || existingPoi.name;
             existingPoi.lat = savedPoi.lat || existingPoi.lat;
             existingPoi.lng = savedPoi.lng || existingPoi.lng;
         } else {
+            savedPoi.hinted = !!savedPoi.hinted || !!savedPoi.discovered;
             pois.push(savedPoi);
         }
     }
@@ -181,9 +184,8 @@ function renderPOIMarkers() {
 
     for (const poi of pois) {
 
-        const isVisibleHint = !poi.discovered && isPOIVisibleInView(poi);
-
-        if (!poi.discovered && !isVisibleHint) continue;
+        // Hinweise bleiben sichtbar, sobald sie einmal durch GPS-Naehe gefunden wurden.
+        if (!poi.discovered && !poi.hinted) continue;
 
         let markerColor = "gray";
 
@@ -207,7 +209,8 @@ function renderPOIMarkers() {
             weight: 2
         });
 
-        marker.bindPopup(poi.name);
+        // Der Name wird erst bei vollstaendiger Entdeckung verraten.
+        if (poi.discovered) marker.bindPopup(poi.name);
         marker.addTo(map);
         poiMarkers.push(marker);
     }
@@ -217,6 +220,7 @@ function discoverPOI(poi) {
     if (poi.discovered) return;
 
     poi.discovered = true;
+    poi.hinted = true;
     savePOIs();
     renderPOIMarkers();
 
@@ -258,16 +262,10 @@ function getPOIDiscoveryRadius(poi) {
     return 15;
 }
 
-function isPOIVisibleInView(poi) {
-    if (!userMarker) return false;
-
-    const userLatLng = userMarker.getLatLng();
-    const distance = map.distance([userLatLng.lat, userLatLng.lng], [poi.lat, poi.lng]);
-
-    return distance <= DISCOVERY_RADIUS;
-}
-
+// Ein POI wird einmalig als gruener Hinweis markiert, wenn der Spieler
+// in den Aufdeckungsradius kommt. Dieser Zustand wird dauerhaft gespeichert.
 function checkPOIs(playerLat, playerLng) {
+    let newHints = false;
     for (const poi of pois) {
         if (poi.discovered) continue;
 
@@ -276,7 +274,14 @@ function checkPOIs(playerLat, playerLng) {
 
         if (distance <= discoveryRadius) {
             discoverPOI(poi);
+        } else if (!poi.hinted && distance <= DISCOVERY_RADIUS) {
+            poi.hinted = true;
+            newHints = true;
         }
+    }
+    if (newHints) {
+        savePOIs();
+        renderPOIMarkers();
     }
 }
 
@@ -371,6 +376,7 @@ async function loadPOIsFromOSM(lat, lng) {
                     lat: poiLat,
                     lng: poiLng,
                     discovered: false,
+                    hinted: false,
                     category: category
                 });
             }
@@ -381,6 +387,10 @@ async function loadPOIsFromOSM(lat, lng) {
             if (!pois.find(p => p.id === poi.id)) {
                 pois.push(poi);
             }
+        }
+        if (userMarker) {
+            const pos = userMarker.getLatLng();
+            checkPOIs(pos.lat, pos.lng);
         }
         savePOIs();
         renderPOIMarkers();
@@ -907,6 +917,7 @@ function resetProgress() {
     lastPOILoadPoint = null;
     for (const poi of pois) {
         poi.discovered = false;
+        poi.hinted = false;
     }
 
 

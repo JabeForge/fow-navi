@@ -1199,6 +1199,14 @@ function drawFog() {
     const stampOffset = fogStampRadius + 1;
     ctx.globalCompositeOperation = "destination-out";
 
+    // Screen-space-Deduplizierung nur beim Zeichnen: der gespeicherte
+    // Spielstand bleibt vollständig und unverändert. Dicht beieinanderliegende
+    // Kreise müssen nicht mehrfach auf nahezu dieselben Pixel gestempelt werden.
+    // 2 px entspricht bei üblichen Zoomstufen einem sehr kleinen Bruchteil
+    // des 45-m-Entdeckungsradius. Während des Ziehens sind 4 px ausreichend.
+    const drawGridSize = fogDragging ? 4 : 2;
+    const drawnScreenCells = new Set();
+
     for (let latCell = minLatCell; latCell <= maxLatCell; latCell++) {
         for (let lngCell = minLngCell; lngCell <= maxLngCell; lngCell++) {
             const points = fogPointCells.get(fogCellKey(latCell, lngCell));
@@ -1206,6 +1214,13 @@ function drawFog() {
             for (const [lat, lng] of points) {
                 if (lat < minLat || lat > maxLat || lng < minLng || lng > maxLng) continue;
                 const point = map.latLngToContainerPoint([lat, lng]);
+                if (point.x < -radiusPx || point.x > canvas.width + radiusPx ||
+                    point.y < -radiusPx || point.y > canvas.height + radiusPx) continue;
+                const gridX = Math.floor((point.x + radiusPx) / drawGridSize);
+                const gridY = Math.floor((point.y + radiusPx) / drawGridSize);
+                const cellId = `${gridX}:${gridY}`;
+                if (drawnScreenCells.has(cellId)) continue;
+                drawnScreenCells.add(cellId);
                 ctx.drawImage(stamp, point.x - stampOffset, point.y - stampOffset);
             }
         }

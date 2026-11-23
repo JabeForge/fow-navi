@@ -1020,8 +1020,61 @@ function installSaveExport() {
             setTimeout(() => URL.revokeObjectURL(url), 60000);
         } catch (error) { storageWarning(error); }
     });
+    const importButton = document.createElement("button");
+    importButton.type = "button";
+    importButton.textContent = "Spielstand importieren";
+    importButton.style.cssText = "display:block;width:100%;margin:12px 0;padding:12px;";
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".json,application/json";
+    fileInput.style.display = "none";
+    importButton.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", async () => {
+        const file = fileInput.files && fileInput.files[0];
+        fileInput.value = "";
+        if (!file || !saveDB) return;
+        try {
+            const backup = JSON.parse(await file.text());
+            if (backup.format !== "fow-navi-backup-v1" ||
+                !Array.isArray(backup.points) ||
+                !backup.points.every(p => Array.isArray(p) && p.length === 2 &&
+                    p.every(n => typeof n === "number" && Number.isFinite(n)) &&
+                    p[0] >= -90 && p[0] <= 90 && p[1] >= -180 && p[1] <= 180) ||
+                typeof backup.xp !== "number" || !Number.isSafeInteger(backup.xp) || backup.xp < 0 ||
+                !Array.isArray(backup.pois) ||
+                !backup.pois.every(p => p && typeof p.id === "string" &&
+                    typeof p.lat === "number" && Number.isFinite(p.lat) &&
+                    typeof p.lng === "number" && Number.isFinite(p.lng))) {
+                alert("Ungueltige FOW-Navi-Sicherungsdatei. Es wurde nichts veraendert.");
+                return;
+            }
+            if (!confirm("Der importierte Spielstand ersetzt den aktuellen Fortschritt. Hast du den aktuellen Spielstand vorher exportiert?")) return;
+            // Wartende Schreibvorgaenge abschliessen, dann alle Daten atomar ersetzen.
+            await pendingSave;
+            await new Promise((resolve, reject) => {
+                const tx = saveDB.transaction("state", "readwrite");
+                const store = tx.objectStore("state");
+                store.put(backup.points, "points");
+                store.put(backup.xp, "xp");
+                store.put(backup.pois, "pois");
+                tx.oncomplete = resolve;
+                tx.onerror = () => reject(tx.error);
+                tx.onabort = () => reject(tx.error);
+            });
+            // Alten localStorage-Spielstand nicht als Rueckfallquelle stehenlassen.
+            localStorage.removeItem("fow_points");
+            localStorage.removeItem("fow_xp");
+            localStorage.removeItem("fow_pois");
+            location.reload();
+        } catch (error) {
+            console.error("Spielstand-Import fehlgeschlagen:", error);
+            alert("Import fehlgeschlagen. Der vorhandene Spielstand wurde nicht absichtlich geloescht.");
+        }
+    });
     const reset = document.getElementById("resetButton");
     menu.insertBefore(button, reset || null);
+    menu.insertBefore(importButton, reset || null);
+    menu.appendChild(fileInput);
 }
 
 initializeGame();

@@ -948,9 +948,31 @@ function loadXP() {
     updateXPDisplay();
 }
 
+// Grosse Punktlisten nicht bei jedem GPS-Speicherintervall komplett kopieren.
+// Mehrere ausstehende Speicheranforderungen werden zu einem Schreibvorgang
+// zusammengefasst. Das Format in IndexedDB und im Backup bleibt unveraendert.
+let pointsSaveScheduled = false;
+let pointsSaveRevision = 0;
+let pointsSavedRevision = 0;
 function saveProgress() {
-    // Snapshot, damit spaetere GPS-Updates nicht in die laufende Speicherung eingreifen.
-    queueSave("points", discoveredPoints.map(p => [p[0], p[1]]));
+    pointsSaveRevision++;
+    if (!saveDB || pointsSaveScheduled) return;
+    pointsSaveScheduled = true;
+    const generation = saveGeneration;
+    pendingSave = pendingSave.catch(() => {}).then(async () => {
+        if (generation !== saveGeneration) return;
+        // Erst unmittelbar vor dem Schreiben kopieren; vorherige Aenderungen
+        // werden dadurch automatisch im gleichen Snapshot beruecksichtigt.
+        const revision = pointsSaveRevision;
+        const snapshot = discoveredPoints.map(p => [p[0], p[1]]);
+        await dbWrite("points", snapshot);
+        pointsSavedRevision = revision;
+    }).catch(storageWarning).finally(() => {
+        pointsSaveScheduled = false;
+        if (generation === saveGeneration && pointsSavedRevision !== pointsSaveRevision) {
+            saveProgress();
+        }
+    });
 }
 
 function loadProgress() {
@@ -1099,6 +1121,7 @@ initializeGame();
 function resetProgress() {
     if (xpSaveTimer !== null) { clearTimeout(xpSaveTimer); xpSaveTimer = null; }
     saveGeneration++;
+    pointsSavedRevision = pointsSaveRevision;
     if (saveDB) {
         pendingSave = pendingSave.catch(() => {}).then(() => new Promise((resolve, reject) => {
             const tx = saveDB.transaction("state", "readwrite");

@@ -855,10 +855,27 @@ function updateXPDisplay() {
     xpFillEl.style.width = `${percent}%`;
 }
 
+// XP sofort anzeigen, aber mehrere schnelle XP-Gewinne gesammelt speichern.
+// Das verhindert hunderte einzelne IndexedDB-Schreibvorgaenge bei Fahrten.
+let xpSaveTimer = null;
+function scheduleXPSave() {
+    if (xpSaveTimer !== null) return;
+    xpSaveTimer = setTimeout(() => {
+        xpSaveTimer = null;
+        saveXP();
+    }, 2000);
+}
+function flushXPSave() {
+    if (xpSaveTimer !== null) {
+        clearTimeout(xpSaveTimer);
+        xpSaveTimer = null;
+    }
+    saveXP();
+}
 function addXP(amount) {
     playerXP += amount;
     updateXPDisplay();
-    saveXP();
+    scheduleXPSave();
 }
 
 // Spielstand in IndexedDB: kein kleines localStorage-Limit fuer grosse Karten.
@@ -1080,6 +1097,7 @@ function installSaveExport() {
 initializeGame();
 
 function resetProgress() {
+    if (xpSaveTimer !== null) { clearTimeout(xpSaveTimer); xpSaveTimer = null; }
     saveGeneration++;
     if (saveDB) {
         pendingSave = pendingSave.catch(() => {}).then(() => new Promise((resolve, reject) => {
@@ -1272,7 +1290,7 @@ if (recenterButtonEl) {
 document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden" && saveDB) {
         saveProgress();
-        saveXP();
+        flushXPSave();
         savePOIs();
     }
 });

@@ -151,14 +151,10 @@ function resizeCanvas() {
 
 resizeCanvas();
 window.addEventListener("resize", resizeCanvas);
-loadXP();
-loadProgress();
-loadPOIs();
-renderPOIMarkers();
-updateRecenterButtonVisibility();
+// Start erst nach dem Laden des Spielstands (siehe initializeGame).
 
 function savePOIs() {
-    localStorage.setItem("fow_pois", JSON.stringify(pois));
+    queueSave("pois", JSON.parse(JSON.stringify(pois)));
 }
 
 function loadPOIs() {
@@ -769,6 +765,7 @@ function saveProgressThrottled() {
     lastSaveTime = now;
 }
 
+function startTracking() {
 if (TEST_MODE) {
     const testRoute = [
         [51.5576, 11.4924],
@@ -789,7 +786,6 @@ if (TEST_MODE) {
         }
     }
 
-    loadProgress();
     playTestRoute();
     console.log("TEST MODE aktiv");
 } else {
@@ -814,6 +810,8 @@ if (TEST_MODE) {
     } else {
         alert("Geolocation wird nicht unterstützt.");
     }
+}
+
 }
 
 function getXPRequiredForLevel(level) {
@@ -863,51 +861,181 @@ function addXP(amount) {
     saveXP();
 }
 
+// Spielstand in IndexedDB: kein kleines localStorage-Limit fuer grosse Karten.
+// Die alten localStorage-Daten bleiben beim Umstieg unangetastet.
+const SAVE_DB = "fow_navi_save_v2";
+let saveDB = null;
+let saveErrorShown = false;
+let pendingSave = Promise.resolve();
+let saveGeneration = 0;
+
+function openSaveDB() {
+    return new Promise((resolve, reject) => {
+        if (!window.indexedDB) return reject(new Error("IndexedDB nicht verfuegbar"));
+        const request = indexedDB.open(SAVE_DB, 1);
+        request.onupgradeneeded = () => {
+            const db = request.result;
+            if (!db.objectStoreNames.contains("state")) db.createObjectStore("state");
+        };
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+    });
+}
+
+function dbRead(key) {
+    return new Promise((resolve, reject) => {
+        const tx = saveDB.transaction("state", "readonly");
+        const req = tx.objectStore("state").get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+    });
+}
+
+function dbWrite(key, value) {
+    return new Promise((resolve, reject) => {
+        const tx = saveDB.transaction("state", "readwrite");
+        tx.objectStore("state").put(value, key);
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+    });
+}
+
+function storageWarning(error) {
+    console.error("FOW Spielstand konnte nicht gespeichert werden:", error);
+    if (!saveErrorShown) {
+        saveErrorShown = true;
+        alert("Achtung: Der Spielstand konnte nicht gespeichert werden. Bitte exportiere ihn ueber das Menue und loesche keine Browserdaten.");
+    }
+}
+
+function queueSave(key, value) {
+    if (!saveDB) return;
+    const generation = saveGeneration;
+    pendingSave = pendingSave.catch(() => {}).then(() => {
+        if (generation !== saveGeneration) return;
+        return dbWrite(key, value);
+    }).catch(storageWarning);
+}
+
 function saveXP() {
-    localStorage.setItem("fow_xp", JSON.stringify({
-        xp: playerXP
-    }));
+    queueSave("xp", playerXP);
 }
 
 function loadXP() {
-    const data = localStorage.getItem("fow_xp");
-
-    if (!data) {
-        updateXPDisplay();
-        return;
-    }
-
-    const parsed = JSON.parse(data);
-    playerXP = parsed.xp || 0;
+    // Legacy-Fallback bei erstmaliger Migration.
+    try {
+        const data = localStorage.getItem("fow_xp");
+        if (data) playerXP = JSON.parse(data).xp || 0;
+    } catch (error) { console.warn("Alte XP nicht lesbar:", error); }
     updateXPDisplay();
 }
 
 function saveProgress() {
-    localStorage.setItem("fow_points", JSON.stringify(discoveredPoints));
-    console.log("Gespeicherte Fog-Punkte:", discoveredPoints.length);
+    // Snapshot, damit spaetere GPS-Updates nicht in die laufende Speicherung eingreifen.
+    queueSave("points", discoveredPoints.map(p => [p[0], p[1]]));
 }
 
 function loadProgress() {
-    const data = localStorage.getItem("fow_points");
-
-    if (!data) {
-        console.log("Keine gespeicherten Fog-Punkte gefunden.");
-        return;
-    }
-
-    const points = JSON.parse(data);
-    console.log("Geladene Fog-Punkte:", points.length);
-
-    for (const [lat, lng] of points) {
-        drawRevealCircle(lat, lng);
-    }
-
-    discoveredPoints = points;
+    try {
+        const data = localStorage.getItem("fow_points");
+        if (!data) return;
+        const points = JSON.parse(data);
+        if (Array.isArray(points)) discoveredPoints = points;
+    } catch (error) { console.warn("Alte Aufdeckung nicht lesbar:", error); }
     rebuildFogIndex();
     requestDrawFog();
 }
 
+async function initializeGame() {
+    // Migration: zuerst den alten Spielstand lesen, dann sicher in IndexedDB uebernehmen.
+    loadXP();
+    loadProgress();
+    loadPOIs();
+    try {
+        saveDB = await openSaveDB();
+        const [savedPoints, savedXP, savedPOIs] = await Promise.all([
+            dbRead("points"), dbRead("xp"), dbRead("pois")
+        ]);
+        if (Array.isArray(savedPoints)) {
+            discoveredPoints = savedPoints;
+            rebuildFogIndex();
+            requestDrawFog();
+        } else if (discoveredPoints.length) {
+            await dbWrite("points", discoveredPoints);
+        }
+        if (typeof savedXP === "number") {
+            playerXP = savedXP;
+        } else {
+            await dbWrite("xp", playerXP);
+        }
+        updateXPDisplay();
+        if (Array.isArray(savedPOIs)) {
+            // loadPOIs liest die bestehenden POIs aus localStorage; die IDB-Version
+            // wird ohne erneute Aufdeckung direkt mit den Standard-POIs zusammengefuehrt.
+            const byId = new Map(pois.map(p => [p.id, p]));
+            for (const saved of savedPOIs) {
+                const existing = byId.get(saved.id);
+                if (existing) Object.assign(existing, saved);
+                else pois.push(saved);
+            }
+        } else {
+            await dbWrite("pois", pois);
+        }
+    } catch (error) {
+        console.error("IndexedDB konnte nicht gestartet werden:", error);
+        alert("Spielstand-Speicher nicht verfuegbar. Die App startet aus Sicherheitsgruenden nicht mit neuer Aufdeckung. Bitte Browser-Speicherplatz pruefen.");
+        return;
+    }
+    renderPOIMarkers();
+    updateRecenterButtonVisibility();
+    installSaveExport();
+    startTracking();
+}
+
+function installSaveExport() {
+    const menu = document.getElementById("gameMenu");
+    if (!menu) return;
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Spielstand exportieren";
+    button.style.cssText = "display:block;width:100%;margin:12px 0;padding:12px;";
+    button.addEventListener("click", async () => {
+        try {
+            await pendingSave;
+            const backup = {
+                format: "fow-navi-backup-v1", date: new Date().toISOString(),
+                points: (await dbRead("points")) || discoveredPoints,
+                xp: (await dbRead("xp")) ?? playerXP,
+                pois: (await dbRead("pois")) || pois
+            };
+            const blob = new Blob([JSON.stringify(backup)], {type:"application/json"});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement("a");
+            link.href = url;
+            link.download = "fow-navi-spielstand-" + new Date().toISOString().slice(0,10) + ".json";
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 60000);
+        } catch (error) { storageWarning(error); }
+    });
+    const reset = document.getElementById("resetButton");
+    menu.insertBefore(button, reset || null);
+}
+
+initializeGame();
+
 function resetProgress() {
+    saveGeneration++;
+    if (saveDB) {
+        pendingSave = pendingSave.catch(() => {}).then(() => new Promise((resolve, reject) => {
+            const tx = saveDB.transaction("state", "readwrite");
+            tx.objectStore("state").clear();
+            tx.oncomplete = resolve;
+            tx.onerror = () => reject(tx.error);
+        })).catch(storageWarning);
+    }
     localStorage.removeItem("fow_points");
     localStorage.removeItem("fow_xp");
     localStorage.removeItem("fow_pois");
@@ -1071,3 +1199,12 @@ if (recenterButtonEl) {
         }
     });
 }
+
+// Letzten Fortschritt beim Verlassen sichern (IndexedDB arbeitet asynchron).
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden" && saveDB) {
+        saveProgress();
+        saveXP();
+        savePOIs();
+    }
+});

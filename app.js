@@ -23,6 +23,7 @@ const pois = [
 // Karte erstellen
 const map = L.map('map', {
     maxZoom: 19,
+    zoomAnimation: false,
     zoomSnap: 0.5,
     zoomDelta: 0.5
 }).setView([0, 0], 14);
@@ -115,38 +116,45 @@ function updateRecenterButtonVisibility() {
 }
 const canvas = document.getElementById("fogCanvas");
 const ctx = canvas.getContext("2d");
-let fogDrawRequested = false;
-// Auf Touch-Geraeten beim Verschieben hoechstens etwa 5x pro Sekunde neu zeichnen.
-// Nach dem Loslassen wird immer sofort das endgueltige Bild gerendert.
+// Gepufferter Nebel: beim Schieben nur die fertige Canvas verschieben.
+const fogViewport = document.createElement("div");
+Object.assign(fogViewport.style, {position:"absolute", inset:"0", overflow:"hidden", pointerEvents:"none", zIndex:"500", background:"transparent"});
+canvas.parentNode.insertBefore(fogViewport, canvas);
+fogViewport.appendChild(canvas);
+Object.assign(canvas.style, {inset:"auto", top:"0", left:"0", transformOrigin:"0 0", willChange:"transform", boxShadow:"0 0 0 100vmax black"});
 let fogDragging = false;
-let lastFogRender = 0;
 let fogPendingFrame = null;
-function requestDrawFog(force = false) {
-    if (force && fogPendingFrame !== null) {
-        cancelAnimationFrame(fogPendingFrame);
-        fogPendingFrame = null;
-        fogDrawRequested = false;
-    }
-    if (fogDrawRequested) return;
-    fogDrawRequested = true;
-    const minInterval = fogDragging ? 200 : 100;
-    function renderFrame(now) {
-        if (!force && now - lastFogRender < minInterval) {
-            fogPendingFrame = requestAnimationFrame(renderFrame);
-            return;
-        }
-        fogPendingFrame = null;
-        fogDrawRequested = false;
-        lastFogRender = now;
-        drawFog();
-    }
-    fogPendingFrame = requestAnimationFrame(renderFrame);
+let fogAnchor = null;
+let fogZoom = null;
+let fogPadding = 0;
+let fogDirty = true;
+function positionFog() {
+    if (!fogAnchor || fogZoom !== map.getZoom()) return false;
+    const p = map.latLngToContainerPoint(fogAnchor);
+    const dx = p.x - Math.round(map.getSize().x / 2);
+    const dy = p.y - Math.round(map.getSize().y / 2);
+    canvas.style.transform = `translate3d(${dx-fogPadding}px,${dy-fogPadding}px,0)`;
+    return Math.abs(dx) < fogPadding * .65 && Math.abs(dy) < fogPadding * .65;
 }
-
+function requestDrawFog(force = false) {
+    fogDirty = true;
+    if (fogPendingFrame !== null) return;
+    fogPendingFrame = requestAnimationFrame(() => {
+        fogPendingFrame = null;
+        if (!fogDirty) return;
+        fogDirty = false;
+        drawFog();
+    });
+}
 function resizeCanvas() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    requestDrawFog();
+    const size = map.getSize();
+    fogPadding = Math.ceil(Math.max(size.x, size.y) * .35);
+    canvas.width = size.x + 2 * fogPadding;
+    canvas.height = size.y + 2 * fogPadding;
+    canvas.style.width = canvas.width + "px";
+    canvas.style.height = canvas.height + "px";
+    fogAnchor = null;
+    requestDrawFog(true);
 }
 
 resizeCanvas();
@@ -535,11 +543,13 @@ function drawRevealCircle(lat, lng) {
 }
 
 // Zeichnen + speichern
-function addRevealCircle(lat, lng) {
+let travelXPDistance = 0;
+let lastTravelFogPoint = null;
+function addRevealCircle(lat, lng, awardXP = true) {
     const newPoint = [lat, lng];
 
-    if (discoveredPoints.length > 0) {
-        const lastPoint = discoveredPoints[discoveredPoints.length - 1];
+    if (lastTravelFogPoint) {
+        const lastPoint = lastTravelFogPoint;
         const distance = map.distance(lastPoint, newPoint);
 
         if (distance < MIN_POINT_DISTANCE) {
@@ -550,7 +560,8 @@ function addRevealCircle(lat, lng) {
     drawRevealCircle(lat, lng);
     discoveredPoints.push(newPoint);
     indexFogPoint(newPoint);
-    addXP(1);
+    lastTravelFogPoint = newPoint;
+    if (awardXP) addXP(1);
 }
 
 function revealPOIArea(lat, lng, poiCategory) {
@@ -600,20 +611,21 @@ function revealPOIArea(lat, lng, poiCategory) {
 function revealPath(fromLat, fromLng, toLat, toLng) {
     const distance = map.distance([fromLat, fromLng], [toLat, toLng]);
 
-    if (distance < 1) {
-        addRevealCircle(toLat, toLng);
-        return;
-    }
-
-    const dynamicStep = getDynamicRevealStep(currentSpeedKmh);
-    const steps = Math.max(1, Math.ceil(distance / dynamicStep));
-
+    if (distance < 1) return;
+    // Fester Abstand entlang der Strecke, unabhängig vom GPS-Intervall.
+    const start = lastTravelFogPoint || [fromLat, fromLng];
+    const length = map.distance(start, [toLat, toLng]);
+    if (length > 2000) { lastTravelFogPoint = null; addRevealCircle(toLat, toLng); return; }
+    const steps = Math.floor(length / 10.05);
     for (let i = 1; i <= steps; i++) {
-        const t = i / steps;
-        const lat = fromLat + (toLat - fromLat) * t;
-        const lng = fromLng + (toLng - fromLng) * t;
-        addRevealCircle(lat, lng);
+        const t = i * 10.05 / length;
+        addRevealCircle(start[0] + (toLat-start[0])*t, start[1] + (toLng-start[1])*t, false);
     }
+    // XP weiterhin ungefähr nach den bisherigen geschwindigkeitsabhängigen Abständen.
+    travelXPDistance += distance / getDynamicRevealStep(currentSpeedKmh);
+    const earned = Math.floor(travelXPDistance);
+    if (earned > 0) { travelXPDistance -= earned; addXP(earned); }
+
 }
 
 function updateSpeedDisplay(speedKmh) {
@@ -741,11 +753,7 @@ function updatePosition(lat, lng, speedMps = null) {
         lastPositionTime = now;
     }
 
-    const nowDraw = Date.now();
-    if (nowDraw - lastDrawTime > DRAW_INTERVAL) {
-        requestDrawFog();
-        lastDrawTime = nowDraw;
-    }
+    requestDrawFog();
 
 // renderPOIMarkers();  // raus hier
     saveProgressThrottled();
@@ -1145,6 +1153,8 @@ function resetProgress() {
     discoveredAreas = [];
     discoveredPoints = [];
     fogPointCells.clear();
+    lastTravelFogPoint = null;
+    travelXPDistance = 0;
     lastRevealPoint = null;
     lastAcceptedPoint = null;
     smoothedPoint = null;
@@ -1211,6 +1221,9 @@ function metersToPixels(lat, lng, meters) {
 }
 
 function drawFog() {
+    fogAnchor = map.getCenter();
+    fogZoom = map.getZoom();
+    positionFog();
     // Canvas-Overlay vollständig füllen, wie bisher.
     ctx.globalCompositeOperation = "source-over";
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1220,7 +1233,7 @@ function drawFog() {
     if (discoveredPoints.length === 0) return;
 
     // Nur Punkte innerhalb des Bildschirms plus Rand für überlappende Kreise.
-    const bounds = map.getBounds();
+    const bounds = L.latLngBounds(map.containerPointToLatLng([-fogPadding, map.getSize().y + fogPadding]), map.containerPointToLatLng([map.getSize().x + fogPadding, -fogPadding]));
     const center = map.getCenter();
     const radiusPx = metersToPixels(center.lat, center.lng, DISCOVERY_RADIUS) * 1.35;
     const paddingMeters = DISCOVERY_RADIUS * 1.5;
@@ -1248,13 +1261,26 @@ function drawFog() {
     const drawGridSize = fogDragging ? 4 : 2;
     const drawnScreenCells = new Set();
 
-    for (let latCell = minLatCell; latCell <= maxLatCell; latCell++) {
-        for (let lngCell = minLngCell; lngCell <= maxLngCell; lngCell++) {
-            const points = fogPointCells.get(fogCellKey(latCell, lngCell));
+    const cellCount = (maxLatCell-minLatCell+1)*(maxLngCell-minLngCell+1);
+    function* visibleBuckets() {
+        if (cellCount > fogPointCells.size) {
+            for (const [key, bucket] of fogPointCells) {
+                const [y,x] = key.split(',').map(Number);
+                if (y >= minLatCell && y <= maxLatCell && x >= minLngCell && x <= maxLngCell) yield bucket;
+            }
+        } else {
+            for (let y=minLatCell;y<=maxLatCell;y++) for(let x=minLngCell;x<=maxLngCell;x++) {
+                const bucket = fogPointCells.get(fogCellKey(y,x));
+                if (bucket) yield bucket;
+            }
+        }
+    }
+    for (const points of visibleBuckets()) {
+        {
             if (!points) continue;
             for (const [lat, lng] of points) {
                 if (lat < minLat || lat > maxLat || lng < minLng || lng > maxLng) continue;
-                const point = map.latLngToContainerPoint([lat, lng]);
+                const point = map.latLngToContainerPoint([lat, lng]).add([fogPadding, fogPadding]);
                 if (point.x < -radiusPx || point.x > canvas.width + radiusPx ||
                     point.y < -radiusPx || point.y > canvas.height + radiusPx) continue;
                 const gridX = Math.floor((point.x + radiusPx) / drawGridSize);
@@ -1269,7 +1295,9 @@ function drawFog() {
     ctx.globalCompositeOperation = "source-over";
 }
 
-map.on("move", () => requestDrawFog());
+map.on("move", () => { if (!positionFog()) requestDrawFog(); });
+map.on("moveend", () => requestDrawFog(true));
+map.on("zoom", () => requestDrawFog(true));
 map.on("zoomend", () => requestDrawFog(true));
 map.on("dragstart", () => {
     fogDragging = true;
